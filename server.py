@@ -131,6 +131,13 @@ def _refine_edit_prompt(user_prompt: str, image_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# State: track last generated/edited image URL for seamless editing
+# ---------------------------------------------------------------------------
+
+_last_image_url: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
@@ -173,6 +180,11 @@ def generate_image(prompt: str, seed: int | None = None) -> str:
         return json.dumps({"error": "No image generated"})
 
     image_url = images[0].get("url", "")
+
+    # Track for seamless edit_image follow-ups
+    global _last_image_url
+    _last_image_url = image_url
+
     return json.dumps(
         {
             "success": True,
@@ -188,26 +200,37 @@ def generate_image(prompt: str, seed: int | None = None) -> str:
 
 
 @mcp.tool
-def edit_image(prompt: str, image_url: str) -> str:
+def edit_image(prompt: str, image_url: str | None = None) -> str:
     """
     Edit an existing image using fal.ai Nano Banana Pro Edit at 4K resolution.
     Use this when the user asks you to modify, edit, change, transform, or alter
     an existing image. A vision model automatically analyzes the source image and
     crafts an optimal editing prompt.
 
-    IMPORTANT: image_url MUST be a publicly accessible URL — use the fal.media URL
-    returned by generate_image or a previous edit_image call.
+    If image_url is omitted, the last generated or edited image is used automatically.
+    If provided, it MUST be a publicly accessible fal.media URL from a previous
+    generate_image or edit_image call.
 
     Args:
         prompt: The user's edit request as-is (e.g. 'make the sky a sunset').
             Prompt refinement is automatic.
-        image_url: Publicly accessible URL of the source image to edit.
-            Use the fal.media URL from a previous generate_image or edit_image result.
+        image_url: Optional. Publicly accessible fal.media URL of the source image.
+            If omitted, uses the last generated/edited image automatically.
 
     Returns:
         JSON with the edited image URL, model info, refined prompt, aspect ratio,
         resolution, and source image URL.
     """
+    global _last_image_url
+
+    # Fall back to last generated/edited image if no URL provided
+    if not image_url:
+        if not _last_image_url:
+            return json.dumps(
+                {"error": "No image_url provided and no previous image to edit."}
+            )
+        image_url = _last_image_url
+
     refined = _refine_edit_prompt(prompt, image_url)
 
     result = fal_client.subscribe(
@@ -228,6 +251,10 @@ def edit_image(prompt: str, image_url: str) -> str:
         return json.dumps({"error": "No edited image returned"})
 
     edited_url = images[0].get("url", "")
+
+    # Track for subsequent edits
+    _last_image_url = edited_url
+
     return json.dumps(
         {
             "success": True,
