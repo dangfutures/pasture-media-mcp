@@ -5,19 +5,47 @@ FastMCP server providing image generation, image editing, and video generation
 tools powered by fal.ai. Includes automatic prompt refinement via Anthropic Claude.
 
 Tools:
-  - generate_image: Text-to-image via fal.ai Nano Banana Pro
-  - edit_image: Image editing via fal.ai Nano Banana Pro Edit (with vision-based prompt refinement)
-  - generate_video: Text-to-video via fal.ai Sora 2 Pro
+  - generate_image: Text-to-image via fal.ai Nano Banana Pro (4K)
+  - edit_image: Image editing via fal.ai Nano Banana Pro Edit (4K, vision-based prompt refinement)
+  - generate_video: Text-to-video via fal.ai Sora 2 Pro (1080p, up to 12s)
 """
 
 import json
 import os
+from typing import Literal
 
 import anthropic
 import fal_client
 from fastmcp import FastMCP
 
-mcp = FastMCP("Pasture Media")
+mcp = FastMCP(
+    "Pasture Media",
+    instructions="""
+    Media generation server for creating images, editing images, and generating videos.
+
+    Tool selection guide:
+    - generate_image: Use when asked to create, generate, draw, or make a NEW image from scratch.
+    - edit_image: Use when asked to modify, edit, change, or transform an EXISTING image.
+      If the user wants to edit the last generated image, omit image_url — it auto-chains.
+    - generate_video: Use when asked to create, generate, or make a video clip.
+      Video generation takes 1-3 minutes. Warn the user about wait time.
+
+    All image tools produce 4K output. Prompt refinement is automatic — pass the
+    user's request as-is without rewriting it into a detailed prompt yourself.
+    """,
+)
+
+# ---------------------------------------------------------------------------
+# Shared types
+# ---------------------------------------------------------------------------
+
+ImageAspectRatio = Literal[
+    "auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"
+]
+
+VideoAspectRatio = Literal["16:9", "9:16"]
+
+VideoDuration = Literal[4, 8, 12]
 
 # ---------------------------------------------------------------------------
 # Prompt refinement system prompts
@@ -142,29 +170,42 @@ _last_image_url: str | None = None
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
-def generate_image(prompt: str, seed: int | None = None) -> str:
+@mcp.tool()
+def generate_image(
+    prompt: str,
+    aspect_ratio: ImageAspectRatio = "auto",
+    seed: int | None = None,
+) -> str:
     """
-    Generate a high-quality 4K image using fal.ai Nano Banana Pro.
-    Use this when the user asks you to create, generate, or draw an image.
+    Generate a high-quality 4K image from a text description.
 
-    Just pass the user's request as the prompt — prompt refinement is handled
-    automatically by a specialized middleware. Do NOT try to craft a detailed
-    image generation prompt yourself.
+    Use this when the user asks you to create, generate, or draw an image.
+    Prompt refinement is handled automatically — pass the user's request as-is.
 
     Args:
-        prompt: The user's image request as-is (e.g. 'a sad grape in a forest').
+        prompt: The user's image request as-is (e.g. "a sad grape in a forest").
+            Do NOT try to craft a detailed image generation prompt yourself.
+        aspect_ratio: Shape of the output image. Use "auto" to let the model
+            decide, or pick a specific ratio for the user's needs:
+            - Landscape: "21:9" (ultrawide), "16:9" (widescreen), "3:2", "4:3"
+            - Square: "1:1"
+            - Portrait: "4:5" (social), "3:4", "2:3", "9:16" (vertical/mobile)
+            Defaults to "auto".
         seed: Optional seed for reproducible generation.
 
     Returns:
-        JSON with the public fal.media image URL, model info, aspect ratio,
-        resolution, and the refined prompt that was actually sent to the model.
+        JSON with the public image URL, model info, aspect ratio, resolution,
+        and the refined prompt that was actually sent to the model.
+
+    Example:
+        generate_image("a goat in a courtroom wearing a tiny lawyer wig", aspect_ratio="16:9")
+        → {"success": true, "url": "https://fal.media/files/...", "aspect_ratio": "16:9", ...}
     """
     refined = _refine_gen_prompt(prompt)
 
     input_args: dict = {
         "prompt": refined,
-        "aspect_ratio": "auto",
+        "aspect_ratio": aspect_ratio,
         "resolution": "4K",
         "safety_tolerance": "6",
         "num_images": 1,
@@ -177,7 +218,12 @@ def generate_image(prompt: str, seed: int | None = None) -> str:
 
     images = result.get("images", [])
     if not images:
-        return json.dumps({"error": "No image generated"})
+        return json.dumps(
+            {
+                "error": "No image generated. The model returned an empty result. "
+                "Try simplifying the prompt or using a different aspect_ratio."
+            }
+        )
 
     image_url = images[0].get("url", "")
 
@@ -189,37 +235,50 @@ def generate_image(prompt: str, seed: int | None = None) -> str:
         {
             "success": True,
             "url": image_url,
+            "width": images[0].get("width"),
+            "height": images[0].get("height"),
             "seed": result.get("seed"),
             "model": "fal-ai/nano-banana-pro",
             "prompt": prompt,
             "refined_prompt": refined,
-            "aspect_ratio": "auto",
+            "aspect_ratio": aspect_ratio,
             "resolution": "4K",
         }
     )
 
 
-@mcp.tool
-def edit_image(prompt: str, image_url: str | None = None) -> str:
+@mcp.tool()
+def edit_image(
+    prompt: str,
+    image_url: str | None = None,
+    aspect_ratio: ImageAspectRatio = "auto",
+) -> str:
     """
-    Edit an existing image using fal.ai Nano Banana Pro Edit at 4K resolution.
+    Edit an existing image using vision-guided AI at 4K resolution.
+
     Use this when the user asks you to modify, edit, change, transform, or alter
     an existing image. A vision model automatically analyzes the source image and
-    crafts an optimal editing prompt.
+    crafts an optimal editing prompt — just pass the user's request as-is.
 
-    If image_url is omitted, the last generated or edited image is used automatically.
-    If provided, it MUST be a publicly accessible fal.media URL from a previous
-    generate_image or edit_image call.
+    If image_url is omitted, the last generated or edited image is used automatically
+    (seamless chaining: generate -> edit -> edit -> ...).
 
     Args:
-        prompt: The user's edit request as-is (e.g. 'make the sky a sunset').
-            Prompt refinement is automatic.
-        image_url: Optional. Publicly accessible fal.media URL of the source image.
+        prompt: The user's edit request as-is (e.g. "make the sky a sunset").
+            Do NOT try to craft a detailed editing prompt yourself.
+        image_url: Publicly accessible URL of the source image to edit.
             If omitted, uses the last generated/edited image automatically.
+        aspect_ratio: Shape of the output image. Use "auto" to preserve the
+            source image's aspect ratio, or pick a specific ratio to crop/reshape.
+            Defaults to "auto".
 
     Returns:
         JSON with the edited image URL, model info, refined prompt, aspect ratio,
         resolution, and source image URL.
+
+    Example:
+        edit_image("make it nighttime with neon lights")
+        → {"success": true, "url": "https://fal.media/files/...", "source_image": "...", ...}
     """
     global _last_image_url
 
@@ -227,7 +286,11 @@ def edit_image(prompt: str, image_url: str | None = None) -> str:
     if not image_url:
         if not _last_image_url:
             return json.dumps(
-                {"error": "No image_url provided and no previous image to edit."}
+                {
+                    "error": "No image_url provided and no previous image to edit. "
+                    "Either provide an image_url parameter, or call generate_image first "
+                    "to create an image that can then be edited."
+                }
             )
         image_url = _last_image_url
 
@@ -238,7 +301,7 @@ def edit_image(prompt: str, image_url: str | None = None) -> str:
         arguments={
             "prompt": refined,
             "image_urls": [image_url],
-            "aspect_ratio": "auto",
+            "aspect_ratio": aspect_ratio,
             "resolution": "4K",
             "safety_tolerance": "6",
             "num_images": 1,
@@ -248,7 +311,13 @@ def edit_image(prompt: str, image_url: str | None = None) -> str:
 
     images = result.get("images", [])
     if not images:
-        return json.dumps({"error": "No edited image returned"})
+        return json.dumps(
+            {
+                "error": "No edited image returned. The model may have had trouble "
+                "with the edit request. Try rephrasing the prompt or using a "
+                "different source image."
+            }
+        )
 
     edited_url = images[0].get("url", "")
 
@@ -259,47 +328,70 @@ def edit_image(prompt: str, image_url: str | None = None) -> str:
         {
             "success": True,
             "url": edited_url,
+            "width": images[0].get("width"),
+            "height": images[0].get("height"),
             "model": "fal-ai/nano-banana-pro/edit",
             "prompt": prompt,
             "refined_prompt": refined,
-            "aspect_ratio": "auto",
+            "aspect_ratio": aspect_ratio,
             "resolution": "4K",
             "source_image": image_url,
         }
     )
 
 
-@mcp.tool
-def generate_video(prompt: str, aspect_ratio: str = "16:9") -> str:
+@mcp.tool()
+def generate_video(
+    prompt: str,
+    aspect_ratio: VideoAspectRatio = "16:9",
+    duration: VideoDuration = 4,
+) -> str:
     """
-    Generate a video using Sora 2 Pro (OpenAI's latest video model via fal.ai).
+    Generate a video clip with audio using Sora 2 Pro (OpenAI's latest video model).
+
     Use this when the user asks you to create, generate, or make a video.
-    Video generation takes 1-3 minutes.
+    Video generation takes 1-3 minutes — warn the user about wait time.
 
     Args:
         prompt: Detailed cinematic description of the video. Include camera angles,
-            lighting, mood, motion, and scene details for best results.
-        aspect_ratio: '16:9' for widescreen or '9:16' for vertical/mobile.
-            Defaults to '16:9'.
+            lighting, mood, motion, and scene details for best results. Unlike image
+            generation, video prompts are NOT auto-refined — write a good one.
+        aspect_ratio: "16:9" for widescreen or "9:16" for vertical/mobile.
+            Defaults to "16:9".
+        duration: Length of the video in seconds. Choose 4, 8, or 12.
+            Longer videos cost more and take longer to generate. Defaults to 4.
 
     Returns:
-        JSON with the video URL, model info, and prompt used.
-    """
-    valid = ["16:9", "9:16"]
-    ar = aspect_ratio if aspect_ratio in valid else "16:9"
+        JSON with the video URL, model info, aspect ratio, and duration.
 
+    Example:
+        generate_video(
+            "Aerial drone shot of a goat standing on a mountain peak at sunrise, "
+            "golden light, clouds below, cinematic orchestral score",
+            aspect_ratio="16:9",
+            duration=8
+        )
+        → {"success": true, "url": "https://...", "duration_seconds": 8, ...}
+    """
     result = fal_client.subscribe(
         "fal-ai/sora-2/text-to-video/pro",
         arguments={
             "prompt": prompt,
-            "aspect_ratio": ar,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "resolution": "1080p",
             "delete_video": False,
         },
     )
 
     video = result.get("video", {})
     if not video.get("url"):
-        return json.dumps({"error": "No video generated"})
+        return json.dumps(
+            {
+                "error": "No video generated. The model returned an empty result. "
+                "Try simplifying the prompt or reducing the duration."
+            }
+        )
 
     return json.dumps(
         {
@@ -307,8 +399,9 @@ def generate_video(prompt: str, aspect_ratio: str = "16:9") -> str:
             "url": video["url"],
             "model": "fal-ai/sora-2/text-to-video/pro",
             "prompt": prompt,
-            "aspect_ratio": ar,
-            "duration_seconds": video.get("duration", 4),
+            "aspect_ratio": aspect_ratio,
+            "resolution": "1080p",
+            "duration_seconds": video.get("duration") or duration,
         }
     )
 
