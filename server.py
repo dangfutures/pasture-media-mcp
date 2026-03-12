@@ -8,6 +8,8 @@ Tools:
   - generate_image: Text-to-image via fal.ai Nano Banana Pro (4K)
   - edit_image: Image editing via fal.ai Nano Banana Pro Edit (4K, vision-based prompt refinement)
   - generate_video: Text-to-video via fal.ai Sora 2 Pro (1080p, up to 12s)
+  - kling_text_to_video: Text-to-video via Kling 3.0 Pro (cinematic, 3-15s, native audio)
+  - kling_image_to_video: Image-to-video via Kling 3.0 Pro (animate images, 3-15s, native audio)
 """
 
 import json
@@ -24,14 +26,23 @@ mcp = FastMCP(
     Media generation server for creating images, editing images, and generating videos.
 
     Tool selection guide:
-    - generate_image: Use when asked to create, generate, draw, or make a NEW image from scratch.
-    - edit_image: Use when asked to modify, edit, change, or transform an EXISTING image.
-      If the user wants to edit the last generated image, omit image_url — it auto-chains.
-    - generate_video: Use when asked to create, generate, or make a video clip.
-      Video generation takes 1-3 minutes. Warn the user about wait time.
+    - generate_image: Create a NEW image from scratch. 4K output, auto prompt refinement.
+    - edit_image: Modify an EXISTING image. Omit image_url to auto-chain from last generation.
+    - generate_video: Quick video clip via Sora 2 Pro (4-12s, 1080p). Best for short clips.
+    - kling_text_to_video: Cinematic video from text via Kling 3.0 Pro (3-15s). Best for
+      complex scenes, realistic motion, and native audio. Use for longer/higher-quality videos.
+    - kling_image_to_video: Animate a still image into video via Kling 3.0 Pro (3-15s).
+      Use when the user has an image and wants to bring it to life with motion.
 
-    All image tools produce 4K output. Prompt refinement is automatic — pass the
-    user's request as-is without rewriting it into a detailed prompt yourself.
+    Video model selection:
+    - For quick, short clips (4-12s): use generate_video (Sora 2 Pro)
+    - For cinematic quality, longer videos (up to 15s), or native audio: use kling_text_to_video
+    - For animating an existing image: use kling_image_to_video
+    - Kling videos take 2-5 minutes. Sora videos take 1-3 minutes. Warn the user.
+
+    All image tools produce 4K output. Prompt refinement is automatic for images —
+    pass the user's request as-is without rewriting it.
+    Video prompts are NOT auto-refined — write detailed, cinematic prompts yourself.
     """,
 )
 
@@ -44,6 +55,10 @@ ImageAspectRatio = Literal[
 ]
 
 VideoAspectRatio = Literal["16:9", "9:16"]
+
+KlingAspectRatio = Literal["16:9", "9:16", "1:1"]
+
+KlingDuration = Literal[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 ImageResolution = Literal["1K", "2K", "4K"]
 
@@ -410,6 +425,184 @@ def generate_video(
             "aspect_ratio": aspect_ratio,
             "resolution": "1080p",
             "duration_seconds": video.get("duration") or duration,
+        }
+    )
+
+
+@mcp.tool()
+def kling_text_to_video(
+    prompt: str,
+    duration: KlingDuration = 5,
+    aspect_ratio: KlingAspectRatio = "16:9",
+    generate_audio: bool = True,
+    negative_prompt: str = "blur, distort, and low quality",
+    cfg_scale: float = 0.5,
+) -> str:
+    """
+    Generate a cinematic video clip from a text description using Kling 3.0 Pro.
+
+    Use this when the user asks to create or generate a video from text and wants
+    high cinematic quality with fluid motion. Kling 3.0 Pro excels at complex scenes,
+    multi-subject action, and realistic motion. Supports native audio generation.
+
+    Video generation takes 2-5 minutes depending on duration. Warn the user.
+
+    Args:
+        prompt: Detailed cinematic description of the video. Include camera angles,
+            lighting, mood, motion, scene details, and character actions. Be specific
+            about what happens — Kling responds well to narrative prompts.
+            For audio: include dialogue in the prompt and it will be generated.
+            For English speech use lowercase; for acronyms/proper nouns use uppercase.
+        duration: Length of the video in seconds (3 to 15). Longer videos cost more
+            and take longer. Default 5. Use 3-5 for short clips, 8-10 for scenes,
+            12-15 for longer sequences.
+        aspect_ratio: "16:9" for widescreen (default), "9:16" for vertical/mobile,
+            "1:1" for square.
+        generate_audio: Whether to generate native audio for the video. Default true.
+            Supports Chinese and English voice output. Set false for silent clips
+            (e.g. if you plan to add a voiceover or music separately).
+        negative_prompt: What to avoid in the video. Default "blur, distort, and
+            low quality". Add specific things to exclude.
+        cfg_scale: How closely to follow the prompt (0.0 to 1.0). Lower = more
+            creative freedom, higher = stricter adherence. Default 0.5.
+
+    Returns:
+        JSON with the video URL, model info, duration, aspect ratio, and prompt.
+
+    Example:
+        kling_text_to_video(
+            "Close-up of glowing fireflies dancing in a dark forest at twilight. "
+            "Soft bioluminescent particles float through the air. Shallow depth of "
+            "field, bokeh lights in background. Magical atmosphere, gentle movement.",
+            duration=5,
+            aspect_ratio="16:9"
+        )
+        -> {"success": true, "url": "https://...", "duration_seconds": 5, ...}
+    """
+    result = fal_client.subscribe(
+        "fal-ai/kling-video/v3/pro/text-to-video",
+        arguments={
+            "prompt": prompt,
+            "duration": str(duration),
+            "aspect_ratio": aspect_ratio,
+            "generate_audio": generate_audio,
+            "negative_prompt": negative_prompt,
+            "cfg_scale": cfg_scale,
+        },
+    )
+
+    video = result.get("video", {})
+    if not video.get("url"):
+        return json.dumps(
+            {
+                "error": "No video generated. Kling returned an empty result. "
+                "Try simplifying the prompt, reducing the duration, or adjusting "
+                "the cfg_scale (lower = more creative freedom)."
+            }
+        )
+
+    return json.dumps(
+        {
+            "success": True,
+            "url": video["url"],
+            "model": "fal-ai/kling-video/v3/pro/text-to-video",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "duration_seconds": duration,
+            "generate_audio": generate_audio,
+        }
+    )
+
+
+@mcp.tool()
+def kling_image_to_video(
+    prompt: str,
+    start_image_url: str,
+    duration: KlingDuration = 5,
+    aspect_ratio: KlingAspectRatio = "16:9",
+    generate_audio: bool = True,
+    end_image_url: str | None = None,
+    negative_prompt: str = "blur, distort, and low quality",
+    cfg_scale: float = 0.5,
+) -> str:
+    """
+    Animate a still image into a cinematic video clip using Kling 3.0 Pro.
+
+    Use this when the user has an existing image and wants to bring it to life
+    as a video. Kling 3.0 Pro Image-to-Video preserves the visual content of the
+    source image while adding fluid, realistic motion. Supports native audio.
+
+    Video generation takes 2-5 minutes depending on duration. Warn the user.
+
+    Args:
+        prompt: Describe the motion, action, and changes you want to see in the
+            video. The image provides the visual starting point; the prompt guides
+            what happens next. Example: "The character slowly turns their head and
+            smiles. Camera pulls back to reveal the full scene."
+            For audio: include dialogue or sound descriptions and they will be generated.
+        start_image_url: Publicly accessible URL of the source image to animate.
+            Use a fal.media URL from generate_image, an S3 URL, or any public image.
+            The image sets the visual starting point for the video.
+        duration: Length of the video in seconds (3 to 15). Default 5.
+        aspect_ratio: "16:9" for widescreen (default), "9:16" for vertical/mobile,
+            "1:1" for square. Should generally match the source image's orientation.
+        generate_audio: Whether to generate native audio. Default true.
+        end_image_url: Optional URL of an image to use as the ending frame.
+            The video will transition from start_image to end_image. Useful for
+            creating smooth transitions between two keyframes.
+        negative_prompt: What to avoid. Default "blur, distort, and low quality".
+        cfg_scale: Prompt adherence (0.0-1.0). Default 0.5.
+
+    Returns:
+        JSON with the video URL, model info, duration, source image, and prompt.
+
+    Example:
+        kling_image_to_video(
+            "The goat slowly turns its head, wind ruffles its fur, "
+            "camera gently zooms out to reveal a mountain landscape at sunset",
+            start_image_url="https://fal.media/files/example/goat.png",
+            duration=10
+        )
+        -> {"success": true, "url": "https://...", "duration_seconds": 10, ...}
+    """
+    input_args: dict = {
+        "prompt": prompt,
+        "start_image_url": start_image_url,
+        "duration": str(duration),
+        "aspect_ratio": aspect_ratio,
+        "generate_audio": generate_audio,
+        "negative_prompt": negative_prompt,
+        "cfg_scale": cfg_scale,
+    }
+    if end_image_url:
+        input_args["end_image_url"] = end_image_url
+
+    result = fal_client.subscribe(
+        "fal-ai/kling-video/v3/pro/image-to-video",
+        arguments=input_args,
+    )
+
+    video = result.get("video", {})
+    if not video.get("url"):
+        return json.dumps(
+            {
+                "error": "No video generated from image. Kling returned an empty result. "
+                "Try simplifying the prompt, ensuring the image URL is publicly accessible, "
+                "or reducing the duration."
+            }
+        )
+
+    return json.dumps(
+        {
+            "success": True,
+            "url": video["url"],
+            "model": "fal-ai/kling-video/v3/pro/image-to-video",
+            "prompt": prompt,
+            "start_image_url": start_image_url,
+            "end_image_url": end_image_url,
+            "aspect_ratio": aspect_ratio,
+            "duration_seconds": duration,
+            "generate_audio": generate_audio,
         }
     )
 
