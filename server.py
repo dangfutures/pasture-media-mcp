@@ -45,6 +45,8 @@ ImageAspectRatio = Literal[
 
 VideoAspectRatio = Literal["16:9", "9:16"]
 
+ImageResolution = Literal["1K", "2K", "4K"]
+
 VideoDuration = Literal[4, 8, 12]
 
 # ---------------------------------------------------------------------------
@@ -174,10 +176,11 @@ _last_image_url: str | None = None
 def generate_image(
     prompt: str,
     aspect_ratio: ImageAspectRatio = "auto",
+    resolution: ImageResolution = "4K",
     seed: int | None = None,
 ) -> str:
     """
-    Generate a high-quality 4K image from a text description.
+    Generate a high-quality image from a text description.
 
     Use this when the user asks you to create, generate, or draw an image.
     Prompt refinement is handled automatically — pass the user's request as-is.
@@ -191,6 +194,8 @@ def generate_image(
             - Square: "1:1"
             - Portrait: "4:5" (social), "3:4", "2:3", "9:16" (vertical/mobile)
             Defaults to "auto".
+        resolution: Image resolution. "4K" for maximum quality, "2K" for
+            faster generation, "1K" for drafts/thumbnails. Defaults to "4K".
         seed: Optional seed for reproducible generation.
 
     Returns:
@@ -206,7 +211,7 @@ def generate_image(
     input_args: dict = {
         "prompt": refined,
         "aspect_ratio": aspect_ratio,
-        "resolution": "4K",
+        "resolution": resolution,
         "safety_tolerance": "6",
         "num_images": 1,
         "output_format": "png",
@@ -242,7 +247,7 @@ def generate_image(
             "prompt": prompt,
             "refined_prompt": refined,
             "aspect_ratio": aspect_ratio,
-            "resolution": "4K",
+            "resolution": resolution,
         }
     )
 
@@ -252,9 +257,10 @@ def edit_image(
     prompt: str,
     image_url: str | None = None,
     aspect_ratio: ImageAspectRatio = "auto",
+    resolution: ImageResolution = "4K",
 ) -> str:
     """
-    Edit an existing image using vision-guided AI at 4K resolution.
+    Edit an existing image using vision-guided AI.
 
     Use this when the user asks you to modify, edit, change, transform, or alter
     an existing image. A vision model automatically analyzes the source image and
@@ -271,6 +277,8 @@ def edit_image(
         aspect_ratio: Shape of the output image. Use "auto" to preserve the
             source image's aspect ratio, or pick a specific ratio to crop/reshape.
             Defaults to "auto".
+        resolution: Image resolution. "4K" for maximum quality, "2K" for
+            faster generation, "1K" for drafts/thumbnails. Defaults to "4K".
 
     Returns:
         JSON with the edited image URL, model info, refined prompt, aspect ratio,
@@ -302,7 +310,7 @@ def edit_image(
             "prompt": refined,
             "image_urls": [image_url],
             "aspect_ratio": aspect_ratio,
-            "resolution": "4K",
+            "resolution": resolution,
             "safety_tolerance": "6",
             "num_images": 1,
             "output_format": "png",
@@ -334,7 +342,7 @@ def edit_image(
             "prompt": prompt,
             "refined_prompt": refined,
             "aspect_ratio": aspect_ratio,
-            "resolution": "4K",
+            "resolution": resolution,
             "source_image": image_url,
         }
     )
