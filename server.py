@@ -2,7 +2,7 @@
 Pasture Media MCP Server
 ========================
 FastMCP server providing image generation, image editing, and video generation
-tools powered by fal.ai. Includes automatic prompt refinement via Anthropic Claude.
+tools powered by fal.ai. Includes automatic prompt refinement via OpenAI gpt-4o.
 
 Tools:
   - generate_image: Text-to-image via fal.ai Nano Banana Pro (4K)
@@ -16,7 +16,7 @@ import json
 import os
 from typing import Literal
 
-import anthropic
+import openai
 import fal_client
 from fastmcp import FastMCP
 
@@ -68,74 +68,84 @@ VideoDuration = Literal[4, 8, 12]
 # Prompt refinement system prompts
 # ---------------------------------------------------------------------------
 
-IMAGE_GEN_SYSTEM_PROMPT = """You are an expert image generation prompt engineer for the Nano Banana Pro model (fal.ai).
+IMAGE_GEN_SYSTEM_PROMPT = """You are an expert image generation prompt engineer for the Nano Banana Pro model (Google Gemini 3 Pro Image, served via fal.ai).
 
-Your job: given a user's image request, craft ONE optimal generation prompt.
+Your job: given a user's image request, craft ONE optimal generation prompt. Describe the scene narratively — a simple list of keywords won't cut it.
 
-## Prompt Rules
-1. Use the formula: [Subject] + [Action] + [Location/Context] + [Composition] + [Style]
+## Prompt Formula
+[Subject] + [Action] + [Location/Context] + [Composition] + [Style]
+
+Example: "A striking fashion model wearing a tailored brown dress, sleek boots, and holding a structured handbag. Posing with a confident, statuesque stance, slightly turned. A seamless, deep cherry red studio backdrop. Medium-full shot, center-framed. Fashion magazine style editorial, shot on medium-format analog film, pronounced grain, high saturation, cinematic lighting effect."
+
+## Core Rules
+1. Lead with a strong descriptive statement, not a verb command.
 2. Be specific — provide concrete details on subject, lighting, and composition.
 3. Use positive framing: say "empty street" not "no cars."
-4. Lead with a strong descriptive statement, not a verb command.
-5. Control the camera: use photographic and cinematic terms like "low angle," "aerial view," "close-up."
-6. Specify style: "cartoon style," "photorealistic," "oil painting," "fashion editorial," etc.
+4. Describe the scene narratively, as if directing a photographer.
 
 ## Creative Director Controls (use when relevant)
-- Lighting: "three-point softbox", "golden hour backlighting", "chiaroscuro high contrast"
-- Camera/Lens: "shallow depth of field (f/1.8)", "wide-angle lens", "macro lens"
-- Color grading: "muted teal tones", "1980s color film grain", "high saturation editorial"
-- Materiality: Be precise — "navy blue tweed" not just "jacket"
+- Lighting: "three-point softbox setup", "golden hour backlighting creating long shadows", "chiaroscuro lighting with harsh high contrast", "soft radiant studio lighting"
+- Camera hardware: "shot on GoPro" (immersive, distorted action), "Fujifilm" (authentic color science), "disposable camera" (raw, nostalgic flash aesthetic), "medium-format analog film" (editorial depth)
+- Lens & focus: "low-angle shot with shallow depth of field (f/1.8)", "wide-angle lens" (vast scale), "macro lens" (intricate details), "aerial view"
+- Color grading: "muted teal tones", "1980s color film with grain", "high saturation editorial", "cinematic color grading"
+- Materiality: Be precise about textures — "navy blue tweed" not "jacket", "ornate elven plate armor etched with silver leaf patterns" not "armor", "minimalist ceramic" not "cup"
 
 ## Text Rendering (if text is requested)
-- Enclose text in quotes: "Happy Birthday"
-- Specify the font: "bold, white, sans-serif font"
+- Enclose exact text in quotes: "Happy Birthday"
+- Specify font style: "bold, white, sans-serif font" or "Century Gothic 12px font" or "flowing elegant Brush Script"
+- For multiple text elements, describe each line separately with its own styling
 
 ## Output
-Respond with ONLY the generation prompt — no explanation, no markdown, no quotes. Just the raw prompt text."""
+Respond with ONLY the generation prompt — no explanation, no markdown, no quotes around the whole response. Just the raw prompt text."""
 
-IMAGE_EDIT_SYSTEM_PROMPT = """You are an expert image editing prompt engineer for the Nano Banana Pro model (fal.ai).
+IMAGE_EDIT_SYSTEM_PROMPT = """You are an expert image editing prompt engineer for the Nano Banana Pro model (Google Gemini 3 Pro Image, served via fal.ai).
 
-Your job: given a source image and a user's edit request, craft ONE optimal editing prompt for fal.ai's image editing API.
+Your job: given a source image and a user's edit request, craft ONE optimal editing prompt. You already have a base image — focus on what is changing and what is staying the same.
 
-## Prompt Rules
-1. Describe what changes and what stays the same — be explicit about preserving elements.
-2. Use positive framing: say "empty street" not "no cars."
-3. Lead with a strong verb: edit, transform, change, replace, add, remove.
-4. Use semantic masking — define text-based targets for specific regions (e.g. "the sky", "the person's shirt").
-5. Be specific about lighting, color, materials, and style when relevant.
-6. For style transfer: describe the target style with concrete references.
-7. For adding elements: describe placement, scale, and how it integrates with existing content.
-8. For removing elements: state what to remove and what should fill the space.
+## Core Rules
+1. Start with a strong verb: edit, transform, change, replace, add, remove.
+2. Be explicit about what to keep exactly the same.
+3. Use positive framing: say "empty street" not "no cars."
+4. Use semantic masking — define text-based targets for specific regions (e.g. "the sky", "the person's shirt", "the background").
+
+## Edit Types
+- Inpainting/removal: state what to remove and what should fill the space. "Remove the man from the photo" or "Replace the sky with a dramatic sunset."
+- Adding elements: describe placement, scale, and how it integrates. "Add a golden retriever sitting in the foreground, matching the existing warm lighting."
+- Style transfer: describe the target style with concrete references. "Transform this into a Van Gogh-style painting while preserving the exact composition and subjects."
+- Color/mood: "Change the color grading to muted teal tones" or "Make this feel like a warm golden hour scene."
 
 ## Creative Director Controls (use when relevant)
-- Lighting: "three-point softbox", "golden hour backlighting", "chiaroscuro high contrast"
-- Camera/Lens: "shallow depth of field (f/1.8)", "wide-angle lens", "macro lens"
-- Color grading: "muted teal tones", "1980s color film grain", "high saturation editorial"
-- Materiality: Be precise — "navy blue tweed" not just "jacket"
+- Lighting: "three-point softbox setup", "golden hour backlighting creating long shadows", "chiaroscuro lighting with harsh high contrast"
+- Camera hardware: "shot on GoPro", "Fujifilm color science", "disposable camera flash aesthetic"
+- Lens & focus: "shallow depth of field (f/1.8)", "wide-angle lens", "macro lens"
+- Color grading: "muted teal tones", "1980s color film with grain", "high saturation editorial"
+- Materiality: Be precise — "navy blue tweed" not "jacket", "brushed stainless steel" not "metal"
 
 ## Output
-Respond with ONLY the editing prompt — no explanation, no markdown, no quotes. Just the raw prompt text."""
+Respond with ONLY the editing prompt — no explanation, no markdown, no quotes around the whole response. Just the raw prompt text."""
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _get_anthropic() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+def _get_openai() -> openai.OpenAI:
+    return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 
 
 def _refine_gen_prompt(user_prompt: str) -> str:
-    """Use Claude to refine a casual image request into an optimal fal.ai prompt."""
+    """Use gpt-4o to refine a casual image request into an optimal Nano Banana prompt."""
     try:
-        client = _get_anthropic()
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
+        client = _get_openai()
+        response = client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=1024,
-            system=IMAGE_GEN_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": f"Image request: {user_prompt}"}],
+            messages=[
+                {"role": "system", "content": IMAGE_GEN_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Image request: {user_prompt}"},
+            ],
         )
-        text = response.content[0].text if response.content else ""
+        text = response.choices[0].message.content or ""
         if text.strip():
             return text.strip()
     except Exception as e:
@@ -144,30 +154,30 @@ def _refine_gen_prompt(user_prompt: str) -> str:
 
 
 def _refine_edit_prompt(user_prompt: str, image_url: str) -> str:
-    """Use Claude vision to see the image and craft an optimal edit prompt."""
+    """Use gpt-4o vision to see the image and craft an optimal edit prompt."""
     try:
-        client = _get_anthropic()
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
+        client = _get_openai()
+        response = client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=1024,
-            system=IMAGE_EDIT_SYSTEM_PROMPT,
             messages=[
+                {"role": "system", "content": IMAGE_EDIT_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "image",
-                            "source": {"type": "url", "url": image_url},
+                            "type": "image_url",
+                            "image_url": {"url": image_url},
                         },
                         {
                             "type": "text",
                             "text": f"Edit request: {user_prompt}",
                         },
                     ],
-                }
+                },
             ],
         )
-        text = response.content[0].text if response.content else ""
+        text = response.choices[0].message.content or ""
         if text.strip():
             return text.strip()
     except Exception as e:
